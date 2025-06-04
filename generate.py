@@ -843,6 +843,14 @@ def _parse_args():
         help="Use Flash Attention 3 for attention layers or not."
     )
 
+    parser.add_argument(
+        "--enable-sage-attn",
+        "--enable_sage_attn",
+        action="store_true",
+        default=False,
+        help="Use SageAttention for attention layers or not."
+    )
+
     args = parser.parse_args()
 
     _validate_args(args)
@@ -964,12 +972,18 @@ def generate(args):
             t5_fsdp=args.t5_fsdp,
             dit_fsdp=args.dit_fsdp,
             use_usp=(args.ulysses_size > 1 or args.ring_size > 1),
-            t5_cpu=args.t5_cpu, use_taylor_cache= args.enable_taylor_cache
+            t5_cpu=args.t5_cpu,
+            use_taylor_cache=args.enable_taylor_cache,
         )
 
         if args.enable_fa3:
             for block in wan_t2v.model.blocks:
                 block.self_attn.__class__.enable_fa3 = True
+
+        if args.enable_sage_attn:
+            for block in wan_t2v.model.blocks:
+                block.self_attn.__class__.enable_sage_attn = True
+
         
         if args.enable_teacache:
             wan_t2v.__class__.generate = t2v_generate
@@ -1075,6 +1089,11 @@ def generate(args):
         if args.enable_fa3:
             for block in wan_i2v.model.blocks:
                 block.self_attn.__class__.enable_fa3 = True
+
+        if args.enable_sage_attn:
+            for block in wan_i2v.model.blocks:
+                block.self_attn.__class__.enable_sage_attn = True
+
         
         if args.enable_teacache:
             wan_i2v.__class__.generate = i2v_generate

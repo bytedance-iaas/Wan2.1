@@ -10,14 +10,6 @@ import torchvision
 
 __all__ = ['cache_video', 'cache_image', 'str2bool']
 
-try:
-    import sageattention
-    HAS_SAGE_ATTENTION = True
-except ImportError:
-    HAS_SAGE_ATTENTION = False
-
-ENABLE_SAGE_ATTENTION = os.environ.get('ENABLE_SAGE_ATTENTION', '0') == '1' and HAS_SAGE_ATTENTION
-
 def rand_name(length=8, suffix=''):
     name = binascii.b2a_hex(os.urandom(length)).decode('utf-8')
     if suffix:

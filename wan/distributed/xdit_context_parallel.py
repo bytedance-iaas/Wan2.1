@@ -4,8 +4,11 @@ import torch.cuda.amp as amp
 
 import numpy as np
 import logging
-import yunchang
-from yunchang.kernels import AttnType
+try:
+    import yunchang
+    from yunchang.kernels import AttnType
+except ImportError:
+    raise ImportError("Please install yunchang 0.6.0 or later")
 
 from xfuser.core.distributed import (
     get_sequence_parallel_rank,
@@ -16,18 +19,17 @@ from xfuser.core.long_ctx_attention import xFuserLongContextAttention
 
 from ..modules.model import sinusoidal_embedding_1d
 
-import wan.utils.utils as wan_utils
-try:
-    from yunchang.kernels import AttnType
-except ImportError:
-    raise ImportError("Please install yunchang 0.6.0 or later")
-
 try:
     import flash_attn_interface
     FLASH_ATTN_3_AVAILABLE = True
 except ModuleNotFoundError:
     FLASH_ATTN_3_AVAILABLE = False
 
+try:
+    import sageattention
+    SAGE_ATTENTION_AVAILABLE = True
+except ModuleNotFoundError:
+    SAGE_ATTENTION_AVAILABLE = False
 
 def pad_freqs(original_tensor, target_len):
     seq_len, s1, s2 = original_tensor.shape
@@ -295,14 +297,13 @@ def usp_attn_forward(self,
     #     k = torch.cat([u[:l] for u, l in zip(k, k_lens)]).unsqueeze(0)
     #     v = torch.cat([u[:l] for u, l in zip(v, k_lens)]).unsqueeze(0)
     
-    if wan_utils.ENABLE_SAGE_ATTENTION:
-        x = xFuserLongContextAttention(attn_type=AttnType.SAGE_FP8_SM90)(
+    if hasattr(self, 'enable_sage_attn') and self.enable_sage_attn and SAGE_ATTENTION_AVAILABLE:
+        x = xFuserLongContextAttention(attn_type=AttnType.SAGE_AUTO)(
             None,
             query=half(q),
             key=half(k),
             value=half(v),
             window_size=self.window_size)
-
     elif hasattr(self, 'enable_fa3') and self.enable_fa3 and FLASH_ATTN_3_AVAILABLE:
         x = xFuserLongContextAttention(attn_type=AttnType.FA3)(
             None,
