@@ -1,32 +1,12 @@
 # Copyright 2024-2025 The Alibaba Wan Team Authors. All rights reserved.
 import torch
 import torch.cuda.amp as amp
-
-import numpy as np
-import logging
-import yunchang
-from yunchang.kernels import AttnType
-
-from xfuser.core.distributed import (
-    get_sequence_parallel_rank,
-    get_sequence_parallel_world_size,
-    get_sp_group,
-)
+from xfuser.core.distributed import (get_sequence_parallel_rank,
+                                     get_sequence_parallel_world_size,
+                                     get_sp_group)
 from xfuser.core.long_ctx_attention import xFuserLongContextAttention
 
 from ..modules.model import sinusoidal_embedding_1d
-
-import wan.utils.utils as wan_utils
-try:
-    from yunchang.kernels import AttnType
-except ImportError:
-    raise ImportError("Please install yunchang 0.6.0 or later")
-
-try:
-    import flash_attn_interface
-    FLASH_ATTN_3_AVAILABLE = True
-except ModuleNotFoundError:
-    FLASH_ATTN_3_AVAILABLE = False
 
 
 def pad_freqs(original_tensor, target_len):
@@ -83,39 +63,12 @@ def rope_apply(x, grid_sizes, freqs):
     return torch.stack(output).float()
 
 
-def usp_dit_forward_vace(self, x, vace_context, seq_len, kwargs):
-    # embeddings
-    c = [self.vace_patch_embedding(u.unsqueeze(0)) for u in vace_context]
-    c = [u.flatten(2).transpose(1, 2) for u in c]
-    c = torch.cat([
-        torch.cat([u, u.new_zeros(1, seq_len - u.size(1), u.size(2))], dim=1)
-        for u in c
-    ])
-
-    # arguments
-    new_kwargs = dict(x=x)
-    new_kwargs.update(kwargs)
-
-    # Context Parallel
-    c = torch.chunk(
-        c, get_sequence_parallel_world_size(),
-        dim=1)[get_sequence_parallel_rank()]
-
-    hints = []
-    for block in self.vace_blocks:
-        c, c_skip = block(c, **new_kwargs)
-        hints.append(c_skip)
-    return hints
-
-
 def usp_dit_forward(
     self,
     x,
     t,
     context,
     seq_len,
-    vace_context=None,
-    vace_context_scale=1.0,
     clip_fea=None,
     y=None,
 ):
@@ -131,7 +84,7 @@ def usp_dit_forward(
     if self.freqs.device != device:
         self.freqs = self.freqs.to(device)
 
-    if self.model_type != 'vace' and y is not None:
+    if y is not None:
         x = [torch.cat([u, v], dim=0) for u, v in zip(x, y)]
 
     # embeddings
@@ -161,7 +114,7 @@ def usp_dit_forward(
             for u in context
         ]))
 
-    if self.model_type != 'vace' and clip_fea is not None:
+    if clip_fea is not None:
         context_clip = self.img_emb(clip_fea)  # bs x 257 x dim
         context = torch.concat([context_clip, context], dim=1)
 
@@ -179,86 +132,14 @@ def usp_dit_forward(
         x, get_sequence_parallel_world_size(),
         dim=1)[get_sequence_parallel_rank()]
 
-    if self.model_type == 'vace':
-        hints = self.forward_vace(x, vace_context, seq_len, kwargs)
-        kwargs['hints'] = hints
-        kwargs['context_scale'] = vace_context_scale
-
-    teacache_switch = True
-    if not hasattr(self, "enable_teacache"):
-        teacache_switch =  False
-    
-    if teacache_switch and self.enable_teacache:
-        # print("enable teacache")
-        modulated_inp = e0 if self.use_ref_steps else e
-        device_id = torch.cuda.current_device()
-        # print("check args, {} {} {} {} {}".format(self.cnt, self.ret_steps, self.cutoff_steps, self.coefficients,
-        #                                                     device_id))
-        # teacache
-        if self.cnt%2==0: # even -> conditon
-            self.is_even = True
-            if self.cnt < self.ret_steps or self.cnt >= self.cutoff_steps:
-                    should_calc_even = True
-                    self.accumulated_rel_l1_distance_even = 0
-            else:
-                rescale_func = np.poly1d(self.coefficients)
-                self.accumulated_rel_l1_distance_even += rescale_func(((modulated_inp-self.previous_e0_even).abs().mean() / self.previous_e0_even.abs().mean()).cpu().item())
-                if self.accumulated_rel_l1_distance_even < self.teacache_thresh:
-                    should_calc_even = False
-                else:
-                    should_calc_even = True
-                    self.accumulated_rel_l1_distance_even = 0
-            self.previous_e0_even = modulated_inp.clone()
-
-        else: # odd -> unconditon
-            self.is_even = False
-            if self.cnt < self.ret_steps or self.cnt >= self.cutoff_steps:
-                    should_calc_odd = True
-                    self.accumulated_rel_l1_distance_odd = 0
-            else: 
-                rescale_func = np.poly1d(self.coefficients)
-                self.accumulated_rel_l1_distance_odd += rescale_func(((modulated_inp-self.previous_e0_odd).abs().mean() / self.previous_e0_odd.abs().mean()).cpu().item())
-                if self.accumulated_rel_l1_distance_odd < self.teacache_thresh:
-                    should_calc_odd = False
-                else:
-                    should_calc_odd = True
-                    self.accumulated_rel_l1_distance_odd = 0
-            self.previous_e0_odd = modulated_inp.clone()
-
-    if teacache_switch and self.enable_teacache: 
-        if self.is_even:
-            if not should_calc_even:
-                logging.info("use residual estimation for this difusion step")
-                x += self.previous_residual_even
-            else:
-                ori_x = x.clone()
-                for block in self.blocks:
-                    x = block(x, **kwargs)
-                self.previous_residual_even = x - ori_x
-        else:
-            if not should_calc_odd:
-                logging.info("use residual estimation for thi8s difusion step")
-                x += self.previous_residual_odd
-            else:
-                ori_x = x.clone()
-                for block in self.blocks:
-                    x = block(x, **kwargs)
-                self.previous_residual_odd = x - ori_x
-    
-    else:
-        for block in self.blocks:
-            x = block(x, **kwargs)
+    for block in self.blocks:
+        x = block(x, **kwargs)
 
     # head
     x = self.head(x, e)
 
     # Context Parallel
     x = get_sp_group().all_gather(x, dim=1)
-    
-    if teacache_switch:
-        self.cnt += 1
-        if self.cnt >= self.num_steps:
-            self.cnt = 0
 
     # unpatchify
     x = self.unpatchify(x, grid_sizes)
@@ -294,29 +175,13 @@ def usp_attn_forward(self,
     #     q = torch.cat([u[:l] for u, l in zip(q, k_lens)]).unsqueeze(0)
     #     k = torch.cat([u[:l] for u, l in zip(k, k_lens)]).unsqueeze(0)
     #     v = torch.cat([u[:l] for u, l in zip(v, k_lens)]).unsqueeze(0)
-    
-    if wan_utils.ENABLE_SAGE_ATTENTION:
-        x = xFuserLongContextAttention(attn_type=AttnType.SAGE_FP8_SM90)(
-            None,
-            query=half(q),
-            key=half(k),
-            value=half(v),
-            window_size=self.window_size)
 
-    elif hasattr(self, 'enable_fa3') and self.enable_fa3 and FLASH_ATTN_3_AVAILABLE:
-        x = xFuserLongContextAttention(attn_type=AttnType.FA3)(
-            None,
-            query=half(q),
-            key=half(k),
-            value=half(v),
-            window_size=self.window_size)
-    else:
-        x = xFuserLongContextAttention()(
-            None,
-            query=half(q),
-            key=half(k),
-            value=half(v),
-            window_size=self.window_size)
+    x = xFuserLongContextAttention()(
+        None,
+        query=half(q),
+        key=half(k),
+        value=half(v),
+        window_size=self.window_size)
 
     # TODO: padding after attention.
     # x = torch.cat([x, x.new_zeros(b, s - x.size(1), n, d)], dim=1)

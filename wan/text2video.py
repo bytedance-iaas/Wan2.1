@@ -38,6 +38,7 @@ class WanT2V:
         dit_fsdp=False,
         use_usp=False,
         t5_cpu=False,
+        use_taylor_cache = False
     ):
         r"""
         Initializes the Wan text-to-video generation model components.
@@ -86,21 +87,49 @@ class WanT2V:
         logging.info(f"Creating WanModel from {checkpoint_dir}")
         self.model = WanModel.from_pretrained(checkpoint_dir)
         self.model.eval().requires_grad_(False)
-
+        
+        from wan.taylorseer.forwards import wan_attention_forward, xfusers_wan_forward, wan_forward#, wan_attention_forward_cache_step
         if use_usp:
-            from xfuser.core.distributed import get_sequence_parallel_world_size
+            from xfuser.core.distributed import \
+                get_sequence_parallel_world_size
 
-            from .distributed.xdit_context_parallel import (
-                usp_attn_forward,
-                usp_dit_forward,
-            )
+            from .distributed.xdit_context_parallel import (usp_attn_forward,
+                                                            usp_dit_forward)
+            
             for block in self.model.blocks:
                 block.self_attn.forward = types.MethodType(
                     usp_attn_forward, block.self_attn)
-            self.model.forward = types.MethodType(usp_dit_forward, self.model)
+                
+                if use_taylor_cache:
+                    block.forward = types.MethodType(wan_attention_forward, block)
+                    #block.cache_step_forward = types.MethodType(wan_attention_forward_cache_step, block)
+                else :
+                    self.model.forward = types.MethodType(usp_dit_forward, self.model)
+            if use_taylor_cache:
+              self.model.forward = types.MethodType(xfusers_wan_forward, self.model)
             self.sp_size = get_sequence_parallel_world_size()
         else:
+            if use_taylor_cache:
+                for block in self.model.blocks:
+                    block.forward = types.MethodType(wan_attention_forward, block)
+                    #block.cache_step_forward = types.MethodType(wan_attention_forward_cache_step, block)
+
+                self.model.forward = types.MethodType(wan_forward, self.model)
             self.sp_size = 1
+            
+        #if use_usp:
+        #    from xfuser.core.distributed import \
+        #        get_sequence_parallel_world_size
+#
+        #    from .distributed.xdit_context_parallel import (usp_attn_forward,
+        #                                                    usp_dit_forward)
+        #    for block in self.model.blocks:
+        #        block.self_attn.forward = types.MethodType(
+        #            usp_attn_forward, block.self_attn)
+        #    self.model.forward = types.MethodType(usp_dit_forward, self.model)
+        #    self.sp_size = get_sequence_parallel_world_size()
+        #else:
+        #    self.sp_size = 1
 
         if dist.is_initialized():
             dist.barrier()

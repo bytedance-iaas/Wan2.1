@@ -8,6 +8,7 @@ from diffusers.configuration_utils import ConfigMixin, register_to_config
 from diffusers.models.modeling_utils import ModelMixin
 
 from .attention import flash_attention
+from wan.taylorseer.cache_functions import cache_init, cache_update
 
 __all__ = ['WanModel']
 
@@ -146,12 +147,22 @@ class WanSelfAttention(nn.Module):
 
         q, k, v = qkv_fn(x)
 
-        x = flash_attention(
-            q=rope_apply(q, grid_sizes, freqs),
-            k=rope_apply(k, grid_sizes, freqs),
-            v=v,
-            k_lens=seq_lens,
-            window_size=self.window_size)
+        if hasattr(self, 'enable_fa3') and self.enable_fa3:
+            x = flash_attention(
+                q=rope_apply(q, grid_sizes, freqs),
+                k=rope_apply(k, grid_sizes, freqs),
+                v=v,
+                k_lens=seq_lens,
+                window_size=self.window_size,
+                version=3)
+        else:
+            x = flash_attention(
+                q=rope_apply(q, grid_sizes, freqs),
+                k=rope_apply(k, grid_sizes, freqs),
+                v=v,
+                k_lens=seq_lens,
+                window_size=self.window_size,
+                version=2)
 
         # output
         x = x.flatten(2)
@@ -176,7 +187,10 @@ class WanT2VCrossAttention(WanSelfAttention):
         v = self.v(context).view(b, -1, n, d)
 
         # compute attention
-        x = flash_attention(q, k, v, k_lens=context_lens)
+        if hasattr(self, 'enable_fa3') and self.enable_fa3:
+            x = flash_attention(q, k, v, k_lens=context_lens, version=3)
+        else:
+            x = flash_attention(q, k, v, k_lens=context_lens, version=2)
 
         # output
         x = x.flatten(2)
@@ -217,9 +231,14 @@ class WanI2VCrossAttention(WanSelfAttention):
         v = self.v(context).view(b, -1, n, d)
         k_img = self.norm_k_img(self.k_img(context_img)).view(b, -1, n, d)
         v_img = self.v_img(context_img).view(b, -1, n, d)
-        img_x = flash_attention(q, k_img, v_img, k_lens=None)
-        # compute attention
-        x = flash_attention(q, k, v, k_lens=context_lens)
+        if hasattr(self, 'enable_fa3') and self.enable_fa3:
+            img_x = flash_attention(q, k_img, v_img, k_lens=None, version=3)
+            # compute attention
+            x = flash_attention(q, k, v, k_lens=context_lens, version=3)
+        else:
+            img_x = flash_attention(q, k_img, v_img, k_lens=None, version=2)
+            # compute attention
+            x = flash_attention(q, k, v, k_lens=context_lens, version=2)
 
         # output
         x = x.flatten(2)
@@ -488,7 +507,16 @@ class WanModel(ModelMixin, ConfigMixin):
             self.img_emb = MLPProj(1280, dim, flf_pos_emb=model_type == 'flf2v')
 
         # initialize weights
-        self.init_weights()
+        self.init_weights()        
+        self.cache_init()
+
+    def cache_init(self):
+        self.cache_dic, self.current = cache_init(self)
+    
+    def cache_update(self, **kwargs):
+        # print("############### kwargs: ",  kwargs)
+        if "max_order" in kwargs or "fresh_threshold" in kwargs:
+            self.cache_dic, self.current = cache_update(self, **kwargs)
 
     def forward(
         self,
@@ -497,7 +525,8 @@ class WanModel(ModelMixin, ConfigMixin):
         context,
         seq_len,
         clip_fea=None,
-        y=None,
+        y=None
+        # **kwargs
     ):
         r"""
         Forward pass through the diffusion model
