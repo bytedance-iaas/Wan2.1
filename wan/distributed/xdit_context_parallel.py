@@ -16,6 +16,12 @@ from xfuser.core.long_ctx_attention import xFuserLongContextAttention
 
 from ..modules.model import sinusoidal_embedding_1d
 
+import wan.utils.utils as wan_utils
+try:
+    from yunchang.kernels import AttnType
+except ImportError:
+    raise ImportError("Please install yunchang 0.6.0 or later")
+
 try:
     import flash_attn_interface
     FLASH_ATTN_3_AVAILABLE = True
@@ -288,8 +294,16 @@ def usp_attn_forward(self,
     #     q = torch.cat([u[:l] for u, l in zip(q, k_lens)]).unsqueeze(0)
     #     k = torch.cat([u[:l] for u, l in zip(k, k_lens)]).unsqueeze(0)
     #     v = torch.cat([u[:l] for u, l in zip(v, k_lens)]).unsqueeze(0)
+    
+    if wan_utils.ENABLE_SAGE_ATTENTION:
+        x = xFuserLongContextAttention(attn_type=AttnType.SAGE_FP8_SM90)(
+            None,
+            query=half(q),
+            key=half(k),
+            value=half(v),
+            window_size=self.window_size)
 
-    if hasattr(self, 'enable_fa3') and self.enable_fa3 and FLASH_ATTN_3_AVAILABLE:
+    elif hasattr(self, 'enable_fa3') and self.enable_fa3 and FLASH_ATTN_3_AVAILABLE:
         x = xFuserLongContextAttention(attn_type=AttnType.FA3)(
             None,
             query=half(q),
