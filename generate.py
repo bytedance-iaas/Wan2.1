@@ -30,6 +30,9 @@ from wan.modules.model import sinusoidal_embedding_1d
 from wan.utils.fm_solvers import (FlowDPMSolverMultistepScheduler,
                                get_sampling_sigmas, retrieve_timesteps)
 from wan.utils.fm_solvers_unipc import FlowUniPCMultistepScheduler
+from wan.taylorseer.generates import wan_t2v_generate, wan_i2v_generate
+from wan.taylorseer.forwards import wan_forward, xfusers_wan_forward, wan_attention_forward
+import types
 
 
 EXAMPLE_PROMPT = {
@@ -802,7 +805,7 @@ def _parse_args():
         "--enable_teacache",
         action="store_true",
         default=False,
-        help=" use ret_steps or not")
+        help="enable teacache or not")
     
     #teacache_thresh
     parser.add_argument(
@@ -811,6 +814,27 @@ def _parse_args():
         default= 0.2,
         help="tea_cache threshold")
     
+    parser.add_argument(
+        "--enable_taylor_cache",
+        action="store_true",
+        default=False,
+        help="enable taylor cache or not"
+    )
+    
+    parser.add_argument(
+        "--taylor_cache_max_order",
+        type=int,
+        default= -1,
+        help="taylor cache max_order or not"
+    )
+
+    parser.add_argument(
+        "--taylor_cache_fresh_threshold",
+        type=int,
+        default= -1,
+        help="taylor cache fresh threshold"
+    )
+
     parser.add_argument(
         "--enable-fa3",
         "--enable_fa3",
@@ -940,7 +964,7 @@ def generate(args):
             t5_fsdp=args.t5_fsdp,
             dit_fsdp=args.dit_fsdp,
             use_usp=(args.ulysses_size > 1 or args.ring_size > 1),
-            t5_cpu=args.t5_cpu,
+            t5_cpu=args.t5_cpu, use_taylor_cache= args.enable_taylor_cache
         )
 
         if args.enable_fa3:
@@ -980,6 +1004,18 @@ def generate(args):
         logging.info(
             f"Generating {'image' if 't2i' in args.task else 'video'} ...")
         start = time.time()
+
+        if args.enable_taylor_cache:
+            wan_t2v.generate = types.MethodType(wan_t2v_generate, wan_t2v)
+            cache_update_dic = {}
+            if args.taylor_cache_max_order > 0:
+                cache_update_dic["max_order"] = args.taylor_cache_max_order
+            if args.taylor_cache_fresh_threshold > 0:
+                cache_update_dic["fresh_threshold"] = args.taylor_cache_fresh_threshold
+            
+            # print("*****************>>>>>>>>>>>>>>>>>>",cache_update_dic)
+            wan_t2v.model.cache_update(**cache_update_dic)
+        
         video = wan_t2v.generate(
             args.prompt,
             size=SIZE_CONFIGS[args.size],

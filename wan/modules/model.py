@@ -8,7 +8,7 @@ from diffusers.configuration_utils import ConfigMixin, register_to_config
 from diffusers.models.modeling_utils import ModelMixin
 
 from .attention import flash_attention
-from wan.taylorseer.cache_functions import cache_init
+from wan.taylorseer.cache_functions import cache_init, cache_update
 
 __all__ = ['WanModel']
 
@@ -512,6 +512,12 @@ class WanModel(ModelMixin, ConfigMixin):
 
     def cache_init(self):
         self.cache_dic, self.current = cache_init(self)
+    
+    def cache_update(self, **kwargs):
+        # print("############### kwargs: ",  kwargs)
+        if "max_order" in kwargs or "fresh_threshold" in kwargs:
+            self.cache_dic, self.current = cache_update(self, **kwargs)
+
     def forward(
         self,
         x,
@@ -519,7 +525,8 @@ class WanModel(ModelMixin, ConfigMixin):
         context,
         seq_len,
         clip_fea=None,
-        y=None,
+        y=None
+        # **kwargs
     ):
         r"""
         Forward pass through the diffusion model
