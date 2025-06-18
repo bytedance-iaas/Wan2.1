@@ -230,7 +230,6 @@ def usp_dit_forward(
     if teacache_switch and self.enable_teacache: 
         if self.is_even:
             if not should_calc_even:
-                logging.info("use residual estimation for this difusion step")
                 x += self.previous_residual_even
             else:
                 ori_x = x.clone()
@@ -239,7 +238,6 @@ def usp_dit_forward(
                 self.previous_residual_even = x - ori_x
         else:
             if not should_calc_odd:
-                logging.info("use residual estimation for thi8s difusion step")
                 x += self.previous_residual_odd
             else:
                 ori_x = x.clone()
