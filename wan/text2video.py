@@ -38,7 +38,7 @@ class WanT2V:
         dit_fsdp=False,
         use_usp=False,
         t5_cpu=False,
-        use_taylor_cache = False
+        use_taylor_cache=False,
     ):
         r"""
         Initializes the Wan text-to-video generation model components.
